@@ -1,6 +1,7 @@
 use crate::access_control;
 use crate::error::ContractError;
 use crate::events;
+use crate::reentrancy;
 use crate::storage::DataKey;
 use soroban_sdk::{Address, Bytes, Env, Vec};
 
@@ -83,12 +84,17 @@ fn do_transfer(
 /// Transfers token from one address to another. Caller must be owner, approved, or operator.
 pub fn transfer(env: &Env, from: Address, to: Address, token_id: u64) -> Result<(), ContractError> {
     from.require_auth();
-    require_can_transfer(env, &from, token_id)?;
-    do_transfer(env, &from, &to, token_id)
+    reentrancy::acquire(env)?;
+    let result = (|| {
+        require_can_transfer(env, &from, token_id)?;
+        do_transfer(env, &from, &to, token_id)
+    })();
+    reentrancy::release(env);
+    result
 }
 
-/// Transfers token; if `to` is a contract, invokes nft_recv (max 9 chars) for validation.
-/// Reverts if the receiver contract rejects. Caller must be owner, approved, or operator.
+/// Transfers token; if `to` is a contract, invokes nft_recv for validation.
+/// Reverts (transfers back) if the receiver contract rejects. Caller must be owner, approved, or operator.
 pub fn safe_transfer_from(
     env: &Env,
     from: Address,
@@ -97,27 +103,34 @@ pub fn safe_transfer_from(
     data: Option<Bytes>,
 ) -> Result<(), ContractError> {
     from.require_auth();
-    require_can_transfer(env, &from, token_id)?;
-    do_transfer(env, &from, &to, token_id)?;
+    reentrancy::acquire(env)?;
+    let result = (|| -> Result<(), ContractError> {
+        require_can_transfer(env, &from, token_id)?;
+        do_transfer(env, &from, &to, token_id)?;
 
-    // Notify receiver contract if different from self (ERC-721 receiver callback).
-    if to != env.current_contract_address() {
-        use soroban_sdk::IntoVal;
-        let invoke_result = env.try_invoke_contract::<(), ContractError>(
-            &to,
-            &soroban_sdk::symbol_short!("nft_recv"),
-            soroban_sdk::vec![
-                &env,
-                from.clone().into_val(env),
-                token_id.into_val(env),
-                data.into_val(env),
-            ],
-        );
-        if let Ok(Err(_)) = invoke_result {
-            return Err(ContractError::TransferRejected);
+        // Notify receiver contract if different from self (ERC-721 receiver callback).
+        if to != env.current_contract_address() {
+            use soroban_sdk::IntoVal;
+            let invoke_result = env.try_invoke_contract::<(), ContractError>(
+                &to,
+                &soroban_sdk::symbol_short!("nft_recv"),
+                soroban_sdk::vec![
+                    &env,
+                    from.clone().into_val(env),
+                    token_id.into_val(env),
+                    data.into_val(env),
+                ],
+            );
+            if let Ok(Err(_)) = invoke_result {
+                // Revert: transfer back to from.
+                let _ = do_transfer(env, &to, &from, token_id);
+                return Err(ContractError::TransferRejected);
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    reentrancy::release(env);
+    result
 }
 
 /// Batch transfer: transfers multiple tokens from one address to another.
@@ -128,13 +141,18 @@ pub fn batch_transfer(
     token_ids: Vec<u64>,
 ) -> Result<(), ContractError> {
     from.require_auth();
-    for i in 0..token_ids.len() {
-        let token_id = token_ids.get(i).unwrap();
-        require_can_transfer(env, &from, token_id)?;
-    }
-    for i in 0..token_ids.len() {
-        let token_id = token_ids.get(i).unwrap();
-        do_transfer(env, &from, &to, token_id)?;
-    }
-    Ok(())
+    reentrancy::acquire(env)?;
+    let result = (|| {
+        for i in 0..token_ids.len() {
+            let token_id = token_ids.get(i).unwrap();
+            require_can_transfer(env, &from, token_id)?;
+        }
+        for i in 0..token_ids.len() {
+            let token_id = token_ids.get(i).unwrap();
+            do_transfer(env, &from, &to, token_id)?;
+        }
+        Ok(())
+    })();
+    reentrancy::release(env);
+    result
 }

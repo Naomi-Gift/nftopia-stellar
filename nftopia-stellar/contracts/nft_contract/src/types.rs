@@ -45,7 +45,7 @@ pub enum Role {
     MetadataUpdater = 4,
 }
 
-/// Full token metadata view (for token_metadata query).
+/// Full token metadata view (for token_metadata query). Equivalent to TokenData in spec.
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct TokenMetadata {
@@ -58,6 +58,8 @@ pub struct TokenMetadata {
     pub royalty_percentage: u32,
     pub royalty_recipient: Address,
     pub attributes: Vec<TokenAttribute>,
+    /// For limited editions.
     pub edition_number: Option<u32>,
+    /// For limited editions.
     pub total_editions: Option<u32>,
 }

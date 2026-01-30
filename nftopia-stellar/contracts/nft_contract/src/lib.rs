@@ -5,6 +5,7 @@ mod error;
 mod events;
 mod interface;
 mod metadata;
+mod reentrancy;
 mod royalty;
 mod storage;
 mod token;
@@ -193,6 +194,16 @@ impl NftContract {
         crate::metadata::freeze_metadata(&env, caller)
     }
 
+    pub fn set_edition_info(
+        env: Env,
+        caller: Address,
+        token_id: u64,
+        edition_number: Option<u32>,
+        total_editions: Option<u32>,
+    ) -> Result<(), Err> {
+        crate::metadata::set_edition_info(&env, token_id, edition_number, total_editions, &caller)
+    }
+
     // --- Royalty ---
     pub fn get_royalty_info(
         env: Env,
@@ -232,15 +243,30 @@ impl NftContract {
         if recipients.len() != metadata_uris.len() || recipients.len() != attributes.len() {
             return Err(Err::BatchLengthMismatch);
         }
-        let mut ids = Vec::new(&env);
-        for i in 0..recipients.len() {
-            let to = recipients.get(i).unwrap();
-            let uri = metadata_uris.get(i).unwrap();
-            let attrs = attributes.get(i).unwrap();
-            let id = token::mint(&env, caller.clone(), to, uri, attrs, None)?;
-            ids.push_back(id);
+        access_control::require_minter(&env, &caller)?;
+        access_control::require_not_paused(&env)?;
+        let whitelist_only: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::WhitelistOnlyMint)
+            .unwrap_or(false);
+        if whitelist_only {
+            access_control::require_whitelisted(&env, &caller)?;
         }
-        Ok(ids)
+        reentrancy::acquire(&env)?;
+        let result = (|| {
+            let mut ids = Vec::new(&env);
+            for i in 0..recipients.len() {
+                let to = recipients.get(i).unwrap();
+                let uri = metadata_uris.get(i).unwrap();
+                let attrs = attributes.get(i).unwrap();
+                let id = token::mint_internal(&env, caller.clone(), to, uri, attrs, None)?;
+                ids.push_back(id);
+            }
+            Ok(ids)
+        })();
+        reentrancy::release(&env);
+        result
     }
 
     // --- Collection Info ---

@@ -136,12 +136,59 @@ pub fn set_base_uri(env: &Env, caller: &Address, base_uri: String) -> Result<(),
     Ok(())
 }
 
-/// Permanently freezes metadata. Admin only. Irreversible.
+/// Permanently freezes metadata. Owner only. Irreversible.
 pub fn freeze_metadata(env: &Env, caller: Address) -> Result<(), ContractError> {
     crate::access_control::require_owner(env)?;
     env.storage()
         .instance()
         .set(&DataKey::MetadataFrozen, &true);
     events::emit_metadata_frozen(env, caller);
+    Ok(())
+}
+
+/// Sets edition number and total editions for a token (limited editions). Owner or metadata updater; fails if metadata frozen.
+pub fn set_edition_info(
+    env: &Env,
+    token_id: u64,
+    edition_number: Option<u32>,
+    total_editions: Option<u32>,
+    caller: &Address,
+) -> Result<(), ContractError> {
+    let frozen: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::MetadataFrozen)
+        .unwrap_or(false);
+    if frozen {
+        return Err(ContractError::MetadataFrozen);
+    }
+    let owner: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Owner(token_id))
+        .ok_or(ContractError::TokenNotFound)?;
+    if *caller != owner {
+        crate::access_control::require_metadata_updater(env, caller)?;
+    } else {
+        caller.require_auth();
+    }
+    if let Some(n) = edition_number {
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenEditionNumber(token_id), &n);
+    } else {
+        env.storage()
+            .instance()
+            .remove(&DataKey::TokenEditionNumber(token_id));
+    }
+    if let Some(n) = total_editions {
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenTotalEditions(token_id), &n);
+    } else {
+        env.storage()
+            .instance()
+            .remove(&DataKey::TokenTotalEditions(token_id));
+    }
     Ok(())
 }

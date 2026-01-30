@@ -1,6 +1,7 @@
 use crate::access_control;
 use crate::error::ContractError;
 use crate::events;
+use crate::reentrancy;
 use crate::storage::DataKey;
 use crate::types::{RoyaltyInfo, TokenAttribute};
 use crate::utils::validate_royalty_bps;
@@ -17,7 +18,6 @@ pub fn mint(
 ) -> Result<u64, ContractError> {
     access_control::require_minter(env, &caller)?;
     access_control::require_not_paused(env)?;
-
     let whitelist_only: bool = env
         .storage()
         .instance()
@@ -26,7 +26,21 @@ pub fn mint(
     if whitelist_only {
         access_control::require_whitelisted(env, &caller)?;
     }
+    reentrancy::acquire(env)?;
+    let result = mint_internal(env, caller, to, metadata_uri, attributes, royalty_override);
+    reentrancy::release(env);
+    result
+}
 
+/// Internal mint without auth/role checks. Caller must have already verified minter, paused, whitelist.
+pub(crate) fn mint_internal(
+    env: &Env,
+    caller: Address,
+    to: Address,
+    metadata_uri: soroban_sdk::String,
+    attributes: Vec<TokenAttribute>,
+    royalty_override: Option<RoyaltyInfo>,
+) -> Result<u64, ContractError> {
     let next_id: u64 = env
         .storage()
         .instance()
@@ -109,7 +123,13 @@ pub fn burn(env: &Env, caller: Address, token_id: u64, confirm: bool) -> Result<
     if !confirm {
         return Err(ContractError::BurnNotConfirmed);
     }
+    reentrancy::acquire(env)?;
+    let result = burn_internal(env, caller, token_id);
+    reentrancy::release(env);
+    result
+}
 
+fn burn_internal(env: &Env, caller: Address, token_id: u64) -> Result<(), ContractError> {
     let owner: Address = env
         .storage()
         .instance()
